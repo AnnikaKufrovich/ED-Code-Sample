@@ -1,0 +1,291 @@
+---
+title: "Code Sample (ED Project)"
+author: "Annika Kufrovich"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Library Loading
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(nlme)
+library(ggplot2)
+library(car)
+```
+
+## Intro
+
+For this project, I wanted to model disordered eating beliefs. This uses data from a study of college students over the course of their first semester, looking at disordered eating beliefs, among other variables like gender, athlete status, a contingencies of self-worth (CSW) scale, and hours exercised per week. The surveys were taken before, during, and at the end of the semester, so I will be looking at what can be used to predict disordered eating beliefs and if there is change over time.
+
+## Cleaning the Data
+
+There is a decent amount of missing data. Some participants did not take the 2nd and/or 3rd survey. I removed these incomplete cases for a clear model over time. However, in the future, I would consider different means of addressing these missing data points. We can see that we have 66 people who are missing the 3rd survey and 57 people missing the 2nd survey based on the time sums. There is no one missing both surveys.
+
+```{r}
+#Recoding categorical variables appropriately
+ed <- read.csv("ED.csv")
+ed.clean <- ed %>%
+  mutate(Gender = as.factor(ifelse(Gender == 1, "Male", "Female"))) %>%
+  mutate(Athlete = as.factor(ifelse(Athlete == 1, "Athlete", "Non-Athlete")))
+
+
+##identifying incomplete cases by summing time
+ed.incomp <- ed.clean %>% 
+  mutate(Time2 = ifelse(is.na(EATbelief) == TRUE, NA, Time))%>% 
+  group_by(ID) %>% 
+  summarize(timesum = sum(Time2, na.rm = TRUE))
+
+##Missing counts (6 is a complete case)
+missing.table <-summary(as.factor(ed.incomp$timesum))
+
+##removing incomplete cases
+ed.cleanjoin <- left_join(ed.clean, ed.incomp, by = "ID") %>%
+  filter(timesum == 6)
+
+##Removing extraneous dependent variables from dataset
+ed.clean2 <- ed.cleanjoin %>%
+  select(ID, Time, Gender, Athlete, CSWapp, EATbelief, ExerciseHrsWeek)
+
+##change over time may not be constant, making a categorical time variable
+ed.clean2$Timefact <- as.factor(ed.clean2$Time)
+```
+
+
+
+## Plotting The data
+
+
+Here's my initial plot, even splitting by Athlete status this is a bit cluttered and confusing, so lets try splitting the plots by gender as well.
+
+```{r}
+Spaghetti.Plot <- ggplot(ed.clean2, aes(x = Time, 
+                                        y = EATbelief, 
+                                        color = Gender, 
+                                        group = ID)) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(vars(Athlete)) + 
+  theme(legend.position = "top") + 
+  theme_classic() + 
+  labs(y = "EAT Belief Score") + 
+  scale_x_continuous(breaks = seq(1:3))
+Spaghetti.Plot
+```
+  
+  
+Though clearer, this next plot is still fairly cluttered. Let's look at averages for each of the subdivisions in the following plot.
+
+```{r}
+Spaghetti.Plot1 <- ggplot(ed.clean2, aes(x = Time, 
+                                         y = EATbelief, 
+                                         color = Gender, 
+                                         group = ID)) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(vars(Gender, Athlete)) + 
+  theme(legend.position = "top") + 
+  theme_classic() + 
+  labs(y = "EAT Belief Score") + 
+  scale_x_continuous(breaks = 1:3)
+Spaghetti.Plot1
+```
+
+This is a plot of the means in each group over time. It seems there is likely a difference between athletes and non-athletes and potentially a small interaction between gender and athlete status, but it is difficult to be totally sure from these visuals.
+
+```{r, message=FALSE}
+##summarizing the data for plotting
+ed.cleansum <- ed.clean2 %>%
+  group_by(Gender, Athlete, Time) %>%
+  summarise(EATbelief.mean = mean(EATbelief, na.rm = TRUE))
+ed.cleansum$ID <- rep(1:4, each = 3)
+
+Spaghetti.Plot2 <- ggplot(ed.cleansum, aes(x = Time, 
+                                           y = EATbelief.mean, 
+                                           color = Gender, 
+                                           group = ID)) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(vars(Gender, Athlete)) + 
+  theme(legend.position = "top") + 
+  theme_classic() + 
+  labs(y = "EAT Belief Score (Average)") + 
+  scale_x_continuous(breaks = 1:3)
+Spaghetti.Plot2
+```
+
+Quick check for any interactive patterns with CSWapp. Hard to tell with these plots
+
+```{r}
+Spaghetti.Plot3 <- ggplot(ed.clean2, aes(x = Time, 
+                                         y = EATbelief, 
+                                         color = CSWapp, 
+                                         group = ID)) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(vars(Gender, Athlete)) + 
+  theme_classic() + 
+  labs(y = "EAT Belief Score") + 
+  scale_x_continuous(breaks = 1:3) + 
+  guides(color = guide_legend(title = "CSW Appearance"))
+Spaghetti.Plot3
+```
+
+
+
+## Modeling EATbelief
+
+Since this data looks at a variety of subjects over time, I will be fitting a linear mixed model, specifically a random intercepts model. This allows us to account for randomness of each participant's starting point while allowing us to fit a linear model for the general effect of each variable.
+
+I started with a large model including several interaction terms and eventually reduced it through Anova and Likelihood ratio tests shown below, with `ri.ed3cor` being the final model.
+
+```{r}
+ri.ed <- lme(EATbelief ~ Timefact + Gender + Athlete + 
+               CSWapp + ExerciseHrsWeek + 
+               Timefact*Athlete + Timefact*Gender + Gender*Athlete +
+               Timefact*ExerciseHrsWeek, 
+             random = ~1|ID, 
+             data = ed.clean2)
+
+ri.eds <- lme(EATbelief ~ Timefact + Athlete + 
+                CSWapp + ExerciseHrsWeek + Gender,
+             random = ~1|ID,  
+             na.action = na.omit,
+             data = ed.clean2)
+
+
+c(summary(ri.ed)$BIC, summary(ri.ed)$AIC)
+c(summary(ri.eds)$BIC, summary(ri.eds)$AIC)
+
+
+LRT <- 2*(ri.eds$logLik - ri.ed$logLik)
+1 - pchisq(LRT, df = 7)
+
+Anova(ri.ed)
+```
+
+From our tests it seems none of the above interactive effects contribute meaningfully to our model individually. Overall, the model is a better fit based on the Likelihood ratio test but this could be incidental. It also seems like there may not be a substantial effect of Time, Gender, or Hours exercised per week, but we'll get back to those. Next, we'll see if any interactions with CSWapp add anything to our model.
+
+
+```{r}
+ri.ed2 <- lme(EATbelief ~ Timefact + Athlete + 
+                CSWapp + ExerciseHrsWeek + Gender + 
+                CSWapp*Timefact + CSWapp*Gender + CSWapp*Athlete, 
+             random = ~1|ID,  
+             na.action = na.omit,
+             data = ed.clean2)
+
+c(summary(ri.ed2)$BIC, summary(ri.ed2)$AIC)
+c(summary(ri.eds)$BIC, summary(ri.eds)$AIC)
+
+
+LRT2 <- 2*(ri.eds$logLik - ri.ed2$logLik)
+1 - pchisq(LRT2, df = 4)
+
+Anova(ri.ed2)
+```
+
+It looks like all of these interactions do not significantly add to our model. Even though the interaction of Athlete status and CSWapp appears significant individually, its overall contribution to the model is not significant enough to justify keeping it. Now let's look at dropping gender and Hours exercised per week from our model.
+
+```{r}
+ri.ed3 <- lme(EATbelief ~ Timefact + Athlete + CSWapp, 
+             random = ~1|ID,  
+             na.action = na.omit,
+             data = ed.clean2)
+
+c(summary(ri.ed3)$BIC, summary(ri.ed3)$AIC)
+c(summary(ri.eds)$BIC, summary(ri.eds)$AIC)
+
+LRT3 <- 2*(ri.ed3$logLik - ri.eds$logLik)
+1 - pchisq(LRT3, df = 2)
+
+Anova(ri.eds)
+```
+
+Given this is the 3rd time using the likelihood ratio, we are more likely to get a false positive so I will not be considering that value as terribly strong $\alpha_{new} = .05^3 = .00125$. Because the AIC and BIC are better for the smaller model and the coefficients for gender and Hours Exercised are not significant on their own I think its best to leave them out of the model. For clarity here is what the model now looks like:
+
+```{r}
+ri.ed3 <- lme(EATbelief ~ Timefact + Athlete + CSWapp, 
+             random = ~1|ID,
+             data = ed.clean2)
+
+
+summary(ri.ed3)
+
+Anova(ri.ed3)
+```
+
+Finally, while time does not have a significant directional effect and does not add significantly to our model based on Anova, we can refit our model to account for temporal dependence. Where each time point is dependent on the last.
+
+
+```{r}
+ri.ed4cor <- lme(EATbelief ~ Athlete + CSWapp, 
+             random = ~1|ID,
+             data = ed.clean2, 
+             correlation = corAR1(form = ~Time))
+
+
+summary(ri.ed4cor)
+```
+
+
+This gives us the following model:
+
+$EATbelief = .76 + .5NonAthlete + .26*CSWappearence$
+
+## Interpretations and visualization
+
+Based on the above model we have the following interpretations:
+
+- We expect, on average, holding all else constant, that EATbelief scores will be .5 higher for Non-Athletes than for Athletes
+
+- We expect, on average, holding all else constant, that EATbelief scores will increase by .26 for every 1-point increase in the Contingencies of Self Worth (Appearence).
+
+
+Below is a visualization of our predicted values for athletes and non-athletes with high (3rd quartile) and low (1st quartile) CSWapp values
+
+```{r}
+csw.sum <- summary(ed.clean2$CSWapp)
+
+lowerq <- csw.sum[[2]]
+
+upperq <- csw.sum[[5]]
+
+
+new.data <- data.frame(Time = rep(c(1,2,3),4), 
+                       CSWapp = rep(c(lowerq, lowerq, lowerq, 
+                                      upperq, upperq, upperq), 2), 
+                       Athlete = as.factor(c(rep("NonAthlete", 6), 
+                                             rep("Athlete", 6))), 
+                       ID = rep(c(1, 2, 3, 4), each = 3), 
+                       Athlete01 = c(rep(1, 6), rep(0, 6)), 
+                       CSWapphl = rep(rep(c("low","high"), each = 3), 2))
+
+new.data <- new.data %>%
+  mutate(EATbelief = .76 + .5*Athlete01 + .26*CSWapp)
+
+Final.Plot <- ggplot(new.data, aes(x = Time, 
+                                       y = EATbelief, 
+                                       color = CSWapphl, 
+                                       group = ID)) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(vars(Athlete)) + 
+  theme(legend.position = "top") + 
+  theme_classic()+ 
+  labs(y = "EAT Belief Score") + 
+  scale_x_continuous(breaks = 1:3) + 
+  guides(color = guide_legend(title = "CSW Appearance")) +
+  scale_color_manual(values = c("orange", "royalblue"))
+Final.Plot
+
+
+```
+
+
+## Conclusion (Brief)
+
+While there is not a significant change over time, we can account for temporal dependence and see that both Non-Athlete status and CSWappearence scores have significant positive correlation with EATbelief scores.
+
+
